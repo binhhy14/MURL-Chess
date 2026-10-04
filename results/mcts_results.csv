@@ -1,21 +1,21 @@
-Position,Name,Pieces,Legal Moves,Depth,Iterations,Best Move,Average Time (s)
-1,The Immortal Game,25,40,3,1000,d6e7,0.3235811200021999
-2,The Evergreen Game,21,31,3,1000,d3f5,0.2867710599995917
-3,The Game of the Century,15,40,3,1000,g7h7,0.3219593600006192
-4,Réti's Mate,27,43,3,1000,d3e4,0.3109035799978301
-5,Loyd's Charles XII Problem,9,23,3,1000,g7g8,0.2273912600008771
-6,Back-Rank Mate: Queen Sacrifices,8,22,3,1000,d7e6,0.17123303999833298
-7,Back-Rank Mate: Quiet Knight Move,8,44,3,1000,h3g5,0.24032962000346741
-8,Queen Sacrifice and Knight Support,8,41,3,1000,c8e7,0.20605304000055186
-9,Rook Sacrifice: Queen on the Long Diagonal,8,42,3,1000,b8g8,0.23545197999919765
-10,Rook Sacrifice: Queen and Knight Mate,8,51,3,1000,e8h8,0.2727313800001866
-11,Anastasia's Mate,11,46,3,1000,e5e8,0.304128680001304
-12,Arabian Mate,7,35,3,1000,g8e7,0.19732705999922473
-13,Arabian Mate: Rook Lift,7,21,3,1000,d7d8,0.16124915999971562
-14,Smothered Mate,10,35,3,1000,e5c7,0.24052823999954853
-15,Double-Check Mate,12,51,3,1000,d8e7,0.29333755999978167
-16,Promotion Mate,5,26,3,1000,g3h4,0.1687843799998518
-17,Double Promotion,6,30,3,1000,f6g6,0.23522572000074432
-18,Under-Promotion to a Rook,6,3,3,1000,a1a2,0.14367055999900913
-19,Under-Promotion to a Bishop,6,38,3,1000,c4g8,0.2393926399992779
-20,Under-Promotion to a Knight,7,24,3,1000,a6a7,0.1977056799994898
+position,name,pieces,legal_moves,best_move,depth,total_plies,iterations,average_time_seconds
+1,The Immortal Game,25,40,f5g7,3,6,10000,31.478899819997604
+2,The Evergreen Game,21,31,d3f1,3,6,10000,34.609911839998674
+3,The Game of the Century,15,40,g7h6,3,6,10000,31.916189419996225
+4,Réti's Mate,27,43,d2g5,3,6,10000,50.630428759998175
+5,Loyd's Charles XII Problem,9,23,e1f3,3,6,10000,21.664319759994395
+6,Back-Rank Mate: Queen Sacrifices,8,22,d7e6,3,6,10000,22.042892620005297
+7,Back-Rank Mate: Quiet Knight Move,8,44,h3g5,3,6,10000,29.46210974000278
+8,Queen Sacrifice and Knight Support,8,43,f3c3,3,6,10000,26.557360599999082
+9,Rook Sacrifice: Queen on the Long Diagonal,8,42,d7f6,3,6,10000,23.727591419999953
+10,Rook Sacrifice: Queen and Knight Mate,8,51,f5e7,3,6,10000,27.05783063999552
+11,Anastasia's Mate,11,46,d4g4,3,6,10000,39.62287052000174
+12,Arabian Mate,7,35,a7d4,3,6,10000,28.433720340000583
+13,Arabian Mate: Rook Lift,7,21,e4f6,3,6,10000,19.299039900000206
+14,Smothered Mate,10,35,b5d6,3,6,10000,25.890171400003602
+15,Double-Check Mate,12,51,a3a8,3,6,10000,27.799770840001294
+16,Promotion Mate,5,26,b7b8q,3,6,10000,18.183355559996563
+17,Double Promotion,6,30,a7a8q,3,6,10000,24.553772780002326
+18,Under-Promotion to a Rook,6,3,g1g7,3,6,10000,6.9004099200043125
+19,Under-Promotion to a Bishop,6,32,c2f5,3,6,10000,24.76865776000195
+20,Under-Promotion to a Knight,7,24,c7c8q,3,6,10000,23.52928607999929

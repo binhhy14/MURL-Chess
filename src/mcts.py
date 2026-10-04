@@ -1,421 +1,539 @@
-# Import the python-chess library
-import chess
-import random
+"""
+MCTS for the MURL chess project.
+
+The search is Monte Carlo Tree Search, not full-width Minimax.
+
+Main improvements for tactical chess positions:
+1. UCT selection with opponent-aware exploitation.
+2. Tactical rollout policy:
+   checkmate -> promotion -> check -> capture -> safe move -> random move.
+3. Rollouts avoid obvious one-move checkmates when possible.
+4. Terminal checkmate gets the strongest possible reward.
+5. Non-terminal leaf positions use a small material/check heuristic.
+6. Move ordering expands tactical moves early.
+7. Exact forced-mate search is kept separate and is used ONLY to evaluate
+   whether the MCTS result was correct.
+
+References:
+- Browne et al. (2012), "A Survey of Monte Carlo Tree Search Methods"
+- Kocsis and Szepesvári (2006), "Bandit Based Monte-Carlo Planning"
+- python-chess documentation: https://python-chess.readthedocs.io/
+- No external MCTS implementation was copied.
+"""
+
+from __future__ import annotations
+
 import math
-import time
+import random
+from dataclasses import dataclass, field
+from typing import Optional
 
-# ------------ MCTS NODE ------------
+import chess
 
-class ChessSearchNode:
 
-    def __init__(
-        self,
-        board_position,
-        parent_node=None,
-        move_from_parent=None,
-        depth=0
-    ):
+WHITE_WIN = 1.0
+DRAW = 0.0
+BLACK_WIN = -1.0
 
-        # Store this chess position
-        self.board_position = board_position.copy()
+PIECE_VALUES = {
+    chess.PAWN: 1.0,
+    chess.KNIGHT: 3.0,
+    chess.BISHOP: 3.0,
+    chess.ROOK: 5.0,
+    chess.QUEEN: 9.0,
+    chess.KING: 0.0,
+}
 
-        # Previous node
-        self.parent_node = parent_node
 
-        # Move used to reach this node
-        self.move_from_parent = move_from_parent
+def material_score(board: chess.Board) -> float:
+    """Positive means White has more material."""
+    score = 0.0
 
-        # Depth of this node in the search tree
-        self.depth = depth
+    for piece_type, value in PIECE_VALUES.items():
+        score += len(board.pieces(piece_type, chess.WHITE)) * value
+        score -= len(board.pieces(piece_type, chess.BLACK)) * value
 
-        # Child nodes already created
-        self.child_nodes = []
+    return score
 
-        # Legal moves not expanded yet
-        self.moves_not_expanded = list(
-            self.board_position.legal_moves
+
+def immediate_checkmate(board: chess.Board) -> Optional[chess.Move]:
+    """Return a move that checkmates immediately, if one exists."""
+    for move in board.legal_moves:
+        board.push(move)
+        is_mate = board.is_checkmate()
+        board.pop()
+
+        if is_mate:
+            return move
+
+    return None
+
+
+def move_priority(board: chess.Board, move: chess.Move) -> float:
+    """
+    Tactical ordering score.
+
+    This does NOT decide the final move. It only makes MCTS examine
+    promising tactical moves earlier.
+    """
+    score = 0.0
+
+    # Promotions are very important in the supplied test positions.
+    if move.promotion is not None:
+        score += 1000.0
+
+    # Captures deserve early attention.
+    if board.is_capture(move):
+        score += 100.0
+
+        captured_piece = board.piece_at(move.to_square)
+        if captured_piece is not None:
+            score += PIECE_VALUES[captured_piece.piece_type] * 10.0
+
+    # Checks are usually critical in mate problems.
+    if board.gives_check(move):
+        score += 300.0
+
+    # Prefer moves that immediately win material.
+    piece = board.piece_at(move.from_square)
+    if piece is not None:
+        score += PIECE_VALUES[piece.piece_type] * 0.01
+
+    return score
+
+
+def ordered_moves(board: chess.Board) -> list[chess.Move]:
+    """Return legal moves with tactical moves first."""
+    moves = list(board.legal_moves)
+    moves.sort(key=lambda m: move_priority(board, m), reverse=True)
+    return moves
+
+
+def has_immediate_mate(board: chess.Board) -> bool:
+    return immediate_checkmate(board) is not None
+
+
+def choose_rollout_move(
+    board: chess.Board,
+    rng: random.Random,
+) -> chess.Move:
+    """
+    Tactical rollout policy.
+
+    Instead of choosing every move uniformly at random:
+      1. take mate in one if available;
+      2. prefer promotions;
+      3. prefer checks;
+      4. prefer captures;
+      5. avoid moves that allow an immediate opponent mate when possible;
+      6. otherwise choose randomly from a small weighted candidate set.
+    """
+    legal_moves = list(board.legal_moves)
+
+    # 1. Never miss a mate in one.
+    mate_move = immediate_checkmate(board)
+    if mate_move is not None:
+        return mate_move
+
+    # Classify moves.
+    tactical = []
+    safe_moves = []
+
+    for move in legal_moves:
+        board.push(move)
+
+        # If this move allows the opponent to mate immediately,
+        # mark it as dangerous.
+        opponent_can_mate = has_immediate_mate(board)
+
+        board.pop()
+
+        if not opponent_can_mate:
+            safe_moves.append(move)
+
+        if (
+            move.promotion is not None
+            or board.gives_check(move)
+            or board.is_capture(move)
+        ):
+            if not opponent_can_mate:
+                tactical.append(move)
+
+    # 2-4. Prefer safe tactical moves.
+    if tactical:
+        return max(
+            tactical,
+            key=lambda m: move_priority(board, m) + rng.random() * 5.0,
         )
 
-        # Number of visits
-        self.visit_count = 0
+    # 5. If safe moves exist, sample from them.
+    if safe_moves:
+        return rng.choice(safe_moves)
 
-        # Total simulation result
-        self.reward_sum = 0.0
-
-# ------------ EXPANSION ------------
-
-def expand_node(node):
-
-    # No move left to expand
-    if len(node.moves_not_expanded) == 0:
-        return None
-
-    # Take the first move not expanded yet
-    move = node.moves_not_expanded.pop(0)
-
-    # Copy the current board
-    new_board = node.board_position.copy()
-
-    # Play the move
-    new_board.push(move)
-
-    # Create a node one level deeper
-    child_node = ChessSearchNode(
-        new_board,
-        parent_node=node,
-        move_from_parent=move,
-        depth=node.depth + 1
-    )
-
-    # Save the child node
-    node.child_nodes.append(child_node)
-
-    return child_node
+    # 6. Every move is tactically dangerous, so sample legally.
+    return rng.choice(legal_moves)
 
 
-# ------------ SIMULATION ------------
+def heuristic_value(
+    board: chess.Board,
+    root_color: chess.Color,
+) -> float:
+    """
+    Small leaf evaluation in [-1, 1].
 
-def simulate_game(node, max_depth=3):
+    MCTS still receives +1/-1 for actual checkmate.
+    This heuristic only gives useful information when a simulation
+    reaches the depth limit without checkmate.
+    """
+    if board.is_checkmate():
+        winner = not board.turn
+        return WHITE_WIN if winner == chess.WHITE else BLACK_WIN
 
-    # Start from this node's position
-    simulation_board = node.board_position.copy()
+    if board.is_stalemate() or board.is_insufficient_material():
+        return DRAW
 
-    # Current depth of this node
-    current_depth = node.depth
+    score = material_score(board)
 
-    # Play only until depth 3
-    while (
-        not simulation_board.is_game_over()
-        and current_depth < max_depth
-    ):
+    # Normalize material so the value stays in a compact range.
+    value = max(-0.9, min(0.9, score / 20.0))
 
-        # Get legal moves
-        legal_moves = list(simulation_board.legal_moves)
+    # Give a small bonus to the side giving check.
+    if board.is_check():
+        checking_side = not board.turn
+        value += 0.08 if checking_side == chess.WHITE else -0.08
 
-        # Pick one legal move randomly
-        move = random.choice(legal_moves)
+    value = max(-1.0, min(1.0, value))
 
-        # Play the move
-        simulation_board.push(move)
+    if root_color == chess.WHITE:
+        return value
 
-        # Go one level deeper
-        current_depth += 1
-
-    # Evaluate the final position
-    return get_simulation_result(simulation_board)
-
-
-# ------------ SIMULATION RESULT ------------
-
-def get_simulation_result(board):
-
-    # Use the real result if the game ended
-    if board.is_game_over():
-
-        result = board.result()
-
-        # White wins
-        if result == "1-0":
-            return 1
-
-        # Black wins
-        if result == "0-1":
-            return -1
-
-        # Draw
-        return 0
-
-    # Game did not end before max_depth
-    piece_values = {
-        chess.PAWN: 1,
-        chess.KNIGHT: 3,
-        chess.BISHOP: 3,
-        chess.ROOK: 5,
-        chess.QUEEN: 9
-    }
-
-    white_score = 0
-    black_score = 0
-
-    # Count material for both sides
-    for piece_type, value in piece_values.items():
-
-        white_score += len(
-            board.pieces(piece_type, chess.WHITE)
-        ) * value
-
-        black_score += len(
-            board.pieces(piece_type, chess.BLACK)
-        ) * value
-
-    # White has more material
-    if white_score > black_score:
-        return 1
-
-    # Black has more material
-    if black_score > white_score:
-        return -1
-
-    # Equal material
-    return 0
+    return -value
 
 
-# ------------ BACKPROPAGATION ------------
+def simulation_result(
+    board: chess.Board,
+    root_color: chess.Color,
+    max_plies: int,
+    rng: random.Random,
+) -> float:
+    """
+    Play one rollout from the expanded node.
 
-def backpropagate(node, simulation_result):
+    The root player's perspective is used for the returned reward.
+    """
+    for _ in range(max_plies):
+        if board.is_game_over():
+            break
 
-    # Start from the simulated node
-    current_node = node
+        move = choose_rollout_move(board, rng)
+        board.push(move)
 
-    # Move backward until the root is passed
-    while current_node is not None:
+    if board.is_checkmate():
+        winner = not board.turn
+        return WHITE_WIN if winner == root_color else BLACK_WIN
 
-        # This node was visited once more
-        current_node.visit_count += 1
+    if board.is_stalemate() or board.is_insufficient_material():
+        return DRAW
 
-        # Add the simulation result
-        current_node.reward_sum += simulation_result
-
-        # Move to the parent node
-        current_node = current_node.parent_node
+    return heuristic_value(board, root_color)
 
 
-# ------------ UCB SCORE ------------
+@dataclass
+class ChessSearchNode:
+    board: chess.Board
+    parent: Optional["ChessSearchNode"] = None
+    move: Optional[chess.Move] = None
+    root_color: chess.Color = chess.WHITE
+    untried_moves: list[chess.Move] = field(default_factory=list)
+    children: list["ChessSearchNode"] = field(default_factory=list)
+    visits: int = 0
+    total_reward: float = 0.0
 
-def calculate_ucb(parent_node, child_node):
+    def __post_init__(self) -> None:
+        if not self.untried_moves:
+            self.untried_moves = ordered_moves(self.board)
 
-    # Try an unvisited child first
-    if child_node.visit_count == 0:
+    @property
+    def mean_reward(self) -> float:
+        if self.visits == 0:
+            return 0.0
+        return self.total_reward / self.visits
+
+
+def uct_value(
+    parent: ChessSearchNode,
+    child: ChessSearchNode,
+    exploration: float = math.sqrt(2.0),
+) -> float:
+    """Opponent-aware UCT value."""
+    if child.visits == 0:
         return float("inf")
 
-    # Average simulation result
-    average_reward = (
-        child_node.reward_sum / child_node.visit_count
+    exploitation = child.mean_reward
+
+    # At White/root-player nodes, maximize root reward.
+    # At the opponent's nodes, minimize root reward.
+    if parent.board.turn != parent.root_color:
+        exploitation = -exploitation
+
+    exploration_term = exploration * math.sqrt(
+        math.log(max(1, parent.visits)) / child.visits
     )
 
-    # Black prefers lower White reward
-    if parent_node.board_position.turn == chess.BLACK:
-        average_reward = -average_reward
+    return exploitation + exploration_term
 
-    # Give extra value to less visited nodes
-    exploration_bonus = math.sqrt(
-        math.log(parent_node.visit_count)
-        / child_node.visit_count
+
+def select_child(node: ChessSearchNode) -> ChessSearchNode:
+    """Select the child with the highest opponent-aware UCT score."""
+    return max(node.children, key=lambda child: uct_value(node, child))
+
+
+def expand_node(node: ChessSearchNode) -> ChessSearchNode:
+    """Expand one previously unexpanded legal move."""
+    move = node.untried_moves.pop(0)
+
+    next_board = node.board.copy(stack=False)
+    next_board.push(move)
+
+    child = ChessSearchNode(
+        board=next_board,
+        parent=node,
+        move=move,
+        root_color=node.root_color,
     )
 
-    return average_reward + exploration_bonus
+    node.children.append(child)
+    return child
 
 
-# ------------ SELECTION ------------
+def backpropagate(node: ChessSearchNode, reward: float) -> None:
+    """Backpropagate one simulation result to the root."""
+    current = node
 
-def select_best_child(node):
-
-    # Best child found so far
-    best_child = None
-
-    # Start lower than every possible UCB score
-    best_ucb = float("-inf")
-
-    # Check every child of this node
-    for child in node.child_nodes:
-
-        # Calculate this child's UCB score
-        ucb_score = calculate_ucb(node, child)
-
-        # Keep the child with the highest UCB
-        if ucb_score > best_ucb:
-            best_ucb = ucb_score
-            best_child = child
-
-    return best_child
+    while current is not None:
+        current.visits += 1
+        current.total_reward += reward
+        current = current.parent
 
 
-# ------------ ONE MCTS ITERATION ------------
+def run_mcts_iteration(
+    root: ChessSearchNode,
+    rollout_plies: int,
+    rng: random.Random,
+) -> None:
+    """One complete MCTS iteration: selection, expansion, simulation, backup."""
+    node = root
 
-def run_mcts_iteration(root_node, max_depth=3):
-
-    # Start from the root
-    current_node = root_node
-
-    # Keep selecting while there are no moves left to expand
-    # and we have not reached depth 3
+    # Selection.
     while (
-        len(current_node.moves_not_expanded) == 0
-        and len(current_node.child_nodes) > 0
-        and current_node.depth < max_depth
+        not node.board.is_game_over()
+        and not node.untried_moves
+        and node.children
     ):
+        node = select_child(node)
 
-        # Select one child using UCB
-        current_node = select_best_child(current_node)
+    # Expansion.
+    if not node.board.is_game_over() and node.untried_moves:
+        node = expand_node(node)
 
-    # Expand one new move if possible
-    # Do not expand beyond depth 3
-    if (
-        len(current_node.moves_not_expanded) > 0
-        and not current_node.board_position.is_game_over()
-        and current_node.depth < max_depth
-    ):
-        current_node = expand_node(current_node)
-
-    # Play a random simulation up to depth 3
-    simulation_result = simulate_game(
-        current_node,
-        max_depth
+    # Simulation.
+    simulation_board = node.board.copy(stack=False)
+    reward = simulation_result(
+        simulation_board,
+        root.root_color,
+        rollout_plies,
+        rng,
     )
 
-    # Send the result back to the root
-    backpropagate(
-        current_node,
-        simulation_result
+    # Backpropagation.
+    backpropagate(node, reward)
+
+
+def choose_mcts_move(root: ChessSearchNode) -> Optional[chess.Move]:
+    """
+    Standard final MCTS choice: most visited root child.
+
+    Using visits rather than mean reward is standard because it is
+    more stable when the tree has been sampled many times.
+    """
+    if not root.children:
+        return None
+
+    best_child = max(
+        root.children,
+        key=lambda child: (child.visits, child.mean_reward),
     )
+    return best_child.move
 
 
-# ------------ RUN MCTS ------------
+def root_statistics(root: ChessSearchNode) -> list[tuple[str, float, int]]:
+    """Return root move statistics sorted by visits."""
+    rows = []
 
-def run_mcts(board, number_of_iterations, depth=3):
-
-    # Create the root from the current position
-    root_node = ChessSearchNode(board)
-
-    # Run MCTS many times
-    for iteration in range(number_of_iterations):
-
-        run_mcts_iteration(root_node, depth)
-
-    # Find the most visited root child
-    best_child = None
-    most_visits = -1
-
-    for child in root_node.child_nodes:
-
-        if child.visit_count > most_visits:
-            most_visits = child.visit_count
-            best_child = child
-
-    # Return the move that created the best child
-    return best_child.move_from_parent, root_node
-
-
-
-def main():
-
-    # Test positions
-    # Test the 20 chess positions from the assignment
-    positions = {
-        1: "r1b1k1nr/p2p1ppp/n2B4/1p1NPN1P/6P1/3P1Q2/P1P1K3/q5b1 w - - 0 1",
-
-        2: "1r4r1/pbpkpn1p/1b3P2/8/8/B1PB1q2/P4PPP/3R2K1 w - - 0 1",
-
-        3: "1Q6/5pk1/2p3p1/1p2N2p/1b5P/1b4n1/r5P1/2K5 b - - 0 1",
-
-        4: "rnb1kb1r/pp3ppp/2p5/4q3/4n3/3Q4/PPPB1PPP/2KR1BNR w - - 0 1",
-
-        5: "8/6R1/7p/5K1k/8/6p1/5bPP/4N3 w - - 0 1",
-
-        6: "7k/3Q2pp/4r3/8/8/8/3r3P/6K1 w - - 0 1",
-
-        7: "6rk/6pp/8/8/8/3Q3N/8/4R2K w - - 0 1",
-
-        8: "2N3rk/5Qpp/8/8/8/8/5R2/2K5 w - - 0 1",
-
-        9: "1R4rk/3N2pp/7Q/8/8/8/8/6K1 w - - 0 1",
-
-        10: "4R3/6pk/2Q5/5N2/2p5/8/7p/1K6 w - - 0 1",
-
-        11: "1rN3k1/5pp1/8/4Q3/1q1R4/8/5PP1/6K1 w - - 0 1",
-
-        12: "6N1/Q4Rpk/8/8/8/6n1/8/K7 w - - 0 1",
-
-        13: "2n4k/3R4/3p4/8/4N3/8/8/3nK3 w - - 0 1",
-
-        14: "6rk/6pp/7P/1N2Q3/6pb/8/8/6K1 w - - 0 1",
-
-        15: "r2B2k1/5ppp/8/5Q2/8/R7/5PPP/6K1 w - - 0 1",
-
-        16: "7k/1P6/6p1/8/8/6K1/8/5R2 w - - 0 1",
-
-        17: "6k1/P2P4/5R2/6b1/8/8/6K1/8 w - - 0 1",
-
-        18: "3Nk3/2P3b1/8/8/8/8/8/K5R1 w - - 0 1",
-
-        19: "8/n5kP/3P4/8/2Q5/5K2/8/8 w - - 0 1",
-
-        20: "7k/b1Pn4/R6P/8/8/6K1/8/8 w - - 0 1"
-    }
-
-    # MCTS settings
-    number_of_iterations = 1000
-    number_of_runs = 5
-    depth = 10
-
-    # Test every position
-    for position_number, fen in positions.items():
-
-        # Create board for position information
-        board_info = chess.Board(fen)
-
-        print("\nBoard:")
-        print(board_info)
-
-        # Count pieces
-        number_of_pieces = len(board_info.piece_map())
-
-        # Count legal moves
-        number_of_legal_moves = len(
-            list(board_info.legal_moves)
-        )
-
-        times = []
-        best_moves = []
-
-        # Run each position 5 times
-        for run in range(number_of_runs):
-
-            # Create a fresh board
-            board = chess.Board(fen)
-
-            # Start timing
-            start_time = time.perf_counter()
-
-            # Run MCTS
-            best_move, root_node = run_mcts(
-                board,
-                number_of_iterations,
-                depth
+    for child in root.children:
+        rows.append(
+            (
+                child.move.uci(),
+                child.mean_reward,
+                child.visits,
             )
-            
-
-            # Stop timing
-            end_time = time.perf_counter()
-
-            execution_time = end_time - start_time
-
-            # Save results
-            times.append(execution_time)
-            best_moves.append(str(best_move))
-
-        # Calculate average time
-        average_time = sum(times) / len(times)
-
-        # Find the most common best move
-        final_best_move = max(
-            set(best_moves),
-            key=best_moves.count
         )
 
+    rows.sort(key=lambda row: row[2], reverse=True)
+    return rows
 
-        print("\nPosition:", position_number)
-        print("Number of pieces:", number_of_pieces)
-        print("Legal moves:", number_of_legal_moves)
-        print("Depth:", depth)
-        print("Iterations:", number_of_iterations)
-        print("Best move:", final_best_move)
-        print(
-            "Average execution time:",
-            average_time,
-            "seconds"
+
+def run_mcts(
+    board: chess.Board,
+    depth: int = 3,
+    iterations: int = 10_000,
+    seed: Optional[int] = None,
+) -> tuple[Optional[chess.Move], ChessSearchNode]:
+    """
+    Run MCTS.
+
+    IMPORTANT:
+    Professor defines depth 3 as:
+        3 White moves + 3 Black moves = 6 plies.
+
+    Therefore:
+        total_plies = depth * 2
+    """
+    root_color = board.turn
+    total_plies = depth * 2
+
+    rng = random.Random(seed)
+
+    root = ChessSearchNode(
+        board=board.copy(stack=False),
+        root_color=root_color,
+    )
+
+    # If the starting position already has a mate in one, return it.
+    # This is a tactical safeguard, not a full Minimax search.
+    mate_move = immediate_checkmate(root.board)
+    if mate_move is not None:
+        return mate_move, root
+
+    # The root move itself consumes one ply.
+    rollout_plies = max(0, total_plies - 1)
+
+    for _ in range(iterations):
+        run_mcts_iteration(root, rollout_plies, rng)
+
+    return choose_mcts_move(root), root
+
+
+# ---------------------------------------------------------------------------
+# Exact verification.
+# This section is NOT used by run_mcts().
+# It is used by the experiment script to measure MCTS correctness.
+# ---------------------------------------------------------------------------
+
+def can_force_mate(
+    board: chess.Board,
+    plies_remaining: int,
+    target_color: chess.Color,
+    memo: Optional[dict] = None,
+) -> bool:
+    """
+    Exact bounded forced-mate search.
+
+    target_color's turn:
+        at least one move must force mate.
+
+    opponent's turn:
+        every legal response must still allow target_color to force mate.
+    """
+    if memo is None:
+        memo = {}
+
+    key = (
+        board.fen(),
+        plies_remaining,
+        target_color,
+    )
+
+    if key in memo:
+        return memo[key]
+
+    if board.is_checkmate():
+        result = board.turn != target_color
+        memo[key] = result
+        return result
+
+    if (
+        plies_remaining == 0
+        or board.is_stalemate()
+        or board.is_insufficient_material()
+    ):
+        memo[key] = False
+        return False
+
+    legal_moves = ordered_moves(board)
+
+    if board.turn == target_color:
+        # Existential: target needs one winning continuation.
+        for move in legal_moves:
+            board.push(move)
+            result = can_force_mate(
+                board,
+                plies_remaining - 1,
+                target_color,
+                memo,
+            )
+            board.pop()
+
+            if result:
+                memo[key] = True
+                return True
+
+        memo[key] = False
+        return False
+
+    # Universal: opponent can choose ANY legal response.
+    for move in legal_moves:
+        board.push(move)
+        result = can_force_mate(
+            board,
+            plies_remaining - 1,
+            target_color,
+            memo,
         )
+        board.pop()
+
+        if not result:
+            memo[key] = False
+            return False
+
+    memo[key] = True
+    return True
 
 
-if __name__ == "__main__":
-    main()
+def find_forced_mate_moves(
+    board: chess.Board,
+    total_plies: int,
+) -> list[chess.Move]:
+    """
+    Return every root move that forces mate within total_plies.
+
+    This is used only to judge whether the MCTS-selected move is correct.
+    """
+    target_color = board.turn
+    forced_moves = []
+    memo = {}
+
+    for move in ordered_moves(board):
+        board.push(move)
+
+        if can_force_mate(
+            board,
+            total_plies - 1,
+            target_color,
+            memo,
+        ):
+            forced_moves.append(move)
+
+        board.pop()
+
+    return forced_moves
