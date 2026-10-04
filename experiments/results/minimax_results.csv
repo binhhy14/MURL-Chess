@@ -1,0 +1,21 @@
+Position,Name,Pieces,Legal Moves,Depth,Best Move,Best Score,Average Time (s)
+1,The Immortal Game,25,40,3,d5f4,-10,1.5132729999982986
+2,The Evergreen Game,21,31,3,d3e2,-6,1.5206216799997492
+3,The Game of the Century,15,40,3,b4c3,-14,0.9969183399982284
+4,Réti's Mate,27,43,3,d3e3,0,2.9712407600003643
+5,Loyd's Charles XII Problem,9,23,3,e1f3,6,0.17802235999843105
+6,Back-Rank Mate: Queen Sacrifices,8,22,3,d7c8,3,0.4690892199971131
+7,Back-Rank Mate: Quiet Knight Move,8,44,3,h3g5,11,0.7020315199988545
+8,Queen Sacrifice and Knight Support,8,41,3,f7f8,15,0.4716967400003341
+9,Rook Sacrifice: Queen on the Long Diagonal,8,42,3,h6d6,15,0.47144361999962714
+10,Rook Sacrifice: Queen and Knight Mate,8,51,3,d6h2,16,0.5815058000007411
+11,Anastasia's Mate,11,46,3,e5e8,12,1.8974944000015967
+12,Arabian Mate,7,35,3,g8e7,14,0.434864799999923
+13,Arabian Mate: Rook Lift,7,21,3,e1d1,5,0.15708148000121583
+14,Smothered Mate,10,35,3,h6g7,7,0.5859782000014093
+15,Double-Check Mate,12,51,3,a3a8,18,1.2619523600005778
+16,Promotion Mate,5,26,3,g3g4,13,0.0847927200011327
+17,Double Promotion,6,30,3,d7d8q,20,0.2873750799975824
+18,Under-Promotion to a Rook,6,3,3,g1g7,17,0.02205592000100296
+19,Under-Promotion to a Bishop,6,38,3,c4g8,16,0.37186965999862875
+20,Under-Promotion to a Knight,7,24,3,a6a7,12,0.269759760001034
